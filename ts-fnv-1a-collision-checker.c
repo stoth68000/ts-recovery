@@ -17,6 +17,7 @@
 struct tool_ctx_s
 {
 	char *ifn;
+	int verbose;
 
 	uint64_t packetCount;
 
@@ -103,12 +104,15 @@ int main(int argc, char *argv[])
 	struct tool_ctx_s *ctx = calloc(1, sizeof(*ctx));
 
 	int ch;
-	while ((ch = getopt(argc, argv, "?hi:")) != -1) {
+	while ((ch = getopt(argc, argv, "?hi:v")) != -1) {
 		switch (ch) {
 		case 'b':
 			break;
 		case 'i':
 			ctx->ifn = strdup(optarg);
+			break;
+		case 'v':
+			ctx->verbose++;
 			break;
 		case 'h':
 		case '?':
@@ -145,7 +149,7 @@ int main(int argc, char *argv[])
 			uint16_t pid = ltntstools_pid(pkt);
 			ctx->pid_collisions[pid]++;
 
-			if (pid != 0x1fff) {
+			if (ctx->verbose) {
 				printf("pkt #%12llu: Collision on pid 0x%04x %16llx : ", ctx->packetCount, pid, h);
 				for (int i = 0; i < 16; i++) {
 					printf("%02x ", pkt[i]);
@@ -161,7 +165,8 @@ int main(int argc, char *argv[])
 
 	for (int i = 0; i < 8192; i++) {
 		if (ctx->pid_collisions[i] > 0) {
-			printf("pid 0x%04x has %8d collisions\n", i, ctx->pid_collisions[i]);
+			double pct = ((double)ctx->pid_collisions[i] / (double)ctx->packetCount) * 100.0;
+			printf("pid 0x%04x has %8d collisions %5.2f%%\n", i, ctx->pid_collisions[i], pct);
 		}
 	}
 
