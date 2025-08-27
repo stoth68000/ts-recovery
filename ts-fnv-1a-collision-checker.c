@@ -18,6 +18,7 @@ struct tool_ctx_s
 {
 	char *ifn;
 	int verbose;
+	int hashAlgo; /* 0 = FNV-1a, 1 = crc32 */
 
 	uint64_t packetCount;
 
@@ -63,6 +64,17 @@ int arrayFindInsertPosition(struct tool_ctx_s *ctx, uint64_t hash, int *exists)
     return left;  // Index where value should be inserted
 }
 
+void collisionReport(struct tool_ctx_s *ctx)
+{
+	printf("-- %llu packets\n", ctx->arrayCount);
+	for (int i = 0; i < 8192; i++) {
+		if (ctx->pid_collisions[i] > 0) {
+			double pct = ((double)ctx->pid_collisions[i] / (double)ctx->packetCount) * 100.0;
+			printf("pid 0x%04x has %8d collisions %5.2f%%\n", i, ctx->pid_collisions[i], pct);
+		}
+	}
+}
+
 int arrayAdd(struct tool_ctx_s *ctx, uint64_t hash)
 {
 	int ret = 0;
@@ -97,6 +109,8 @@ int arrayAdd(struct tool_ctx_s *ctx, uint64_t hash)
 void usage()
 {
 	printf("usage: -i input.ts\n");
+	printf("  -a <algo#> -- 0=Algo FNV-1a, 1=crc32 [def: 0]\n");
+	printf("  -v increase verbosity\n");
 }
 
 int main(int argc, char *argv[])
@@ -104,9 +118,12 @@ int main(int argc, char *argv[])
 	struct tool_ctx_s *ctx = calloc(1, sizeof(*ctx));
 
 	int ch;
-	while ((ch = getopt(argc, argv, "?hi:v")) != -1) {
+	while ((ch = getopt(argc, argv, "?ha:i:v:")) != -1) {
 		switch (ch) {
 		case 'b':
+			break;
+		case 'a':
+			ctx->hashAlgo = atoi(optarg);
 			break;
 		case 'i':
 			ctx->ifn = strdup(optarg);
@@ -131,6 +148,7 @@ int main(int argc, char *argv[])
 
 	unsigned char pkt[188];
 
+	time_t lastReport = time(NULL) - 3;
 	FILE *ifh = fopen(ctx->ifn, "rb");
 	while (!feof(ifh) && g_running) {
 		int len = fread(&pkt[0], 1, 188, ifh);
@@ -143,7 +161,19 @@ int main(int argc, char *argv[])
 		}
 
 		/* push to algo */
-		uint64_t h = ltntstools_packet_fingerprint64(pkt);
+		uint64_t h = 0;
+		if (ctx->hashAlgo == 0) {
+			h = ltntstools_packet_fingerprint64(pkt);
+		} else
+		if (ctx->hashAlgo == 1) {
+			uint32_t val;
+			ltntstools_getCRC32(pkt, 188, &val);
+			h = val;
+		} else {
+			printf("bad algo %d, aborting.\n", ctx->hashAlgo);
+		}
+
+		/* Push the hash into the list, check for collisions etc */
 		if (arrayAdd(ctx, h) == 1) {
 
 			uint16_t pid = ltntstools_pid(pkt);
@@ -157,18 +187,18 @@ int main(int argc, char *argv[])
 				printf("\n");
 			}
 		}
+
+		if (time(NULL) >= lastReport + 5) {
+			lastReport = time(NULL);
+			collisionReport(ctx);
+		} 
 	}
 	fclose(ifh);
 	//arrayPrint(ctx);
 
 	printf("Read %llu packets\n", ctx->packetCount);
 
-	for (int i = 0; i < 8192; i++) {
-		if (ctx->pid_collisions[i] > 0) {
-			double pct = ((double)ctx->pid_collisions[i] / (double)ctx->packetCount) * 100.0;
-			printf("pid 0x%04x has %8d collisions %5.2f%%\n", i, ctx->pid_collisions[i], pct);
-		}
-	}
+	collisionReport(ctx);
 
 	free(ctx->ifn);
 	free(ctx);
