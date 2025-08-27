@@ -30,9 +30,74 @@ pid 0x1fff has    54595 collisions 13.65%
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <assert.h>
 #include <libltntstools/ltntstools.h>
 
 #include "fnv-1a.h"
+
+typedef struct
+{
+	uint64_t *data;
+	uint64_t maxEntries;
+	uint64_t head;
+	uint64_t tail;
+	uint64_t overflowCount;
+} UINT64RingArray;
+
+UINT64RingArray *UINT64RingArray_alloc(uint64_t max)
+{
+	UINT64RingArray *ra = calloc(1, sizeof(*ra));
+	if (ra) {
+		ra->data = calloc(1, sizeof(max * sizeof(uint64_t)));
+		if (!ra->data) {
+			free(ra);
+			return NULL;
+		}
+
+		ra->maxEntries = max;
+	}
+
+	return ra;
+}
+
+void UINT64RingArray_free(UINT64RingArray *ra)
+{
+	if (ra) {
+		if (ra->data) {
+			free(ra->data);
+		}
+		free(ra);
+	}
+}
+
+int UINT64RingArray_count(UINT64RingArray *ra)
+{
+    return (ra->tail + ra->maxEntries - ra->head) % ra->maxEntries;
+}
+
+void UINT64RingArray_dprintf(UINT64RingArray *ra, int fd)
+{
+    int i = ra->head;
+	uint32_t idx = 0;
+
+    while (i != ra->tail) {
+		dprintf(fd, "%08ud: %llx\n", idx++, ra->data[i]);
+        i = (i + 1) % ra->maxEntries;
+    }
+	printf("%d entries\n", idx + 1);
+}
+
+void UINT64RingArray_append(UINT64RingArray *ra, uint64_t value)
+{
+	assert(ra);
+	ra->data[ra->tail] = value;
+    ra->tail = (ra->tail + 1) % ra->maxEntries;
+
+    if (ra->tail == ra->head) {
+        ra->head = (ra->head + 1) % ra->maxEntries;
+		ra->overflowCount++;
+    }
+}
 
 struct tool_ctx_s
 {
@@ -40,13 +105,19 @@ struct tool_ctx_s
 	int verbose;
 	int hashAlgo; /* 0 = FNV-1a, 1 = crc32 */
 
-	uint64_t packetCount;
+	uint64_t packetCount; /* Read from disk / I/O */
 
+	/* List of hashs as they arrive in stream order */
+	UINT64RingArray *arrivalArray;
+
+	/* List of hashes sorted ascending */
 	uint64_t *array;
 	uint64_t arrayCount;
 
+	/* Number of overall hash collisions */
 	uint64_t collisions;
 
+	/* Collision count per pid. Typically padding and PSIP */
 	uint32_t pid_collisions[8192];
 };
 
@@ -137,6 +208,8 @@ int main(int argc, char *argv[])
 {
 	struct tool_ctx_s *ctx = calloc(1, sizeof(*ctx));
 
+	ctx->arrivalArray = UINT64RingArray_alloc(200000);
+
 	int ch;
 	while ((ch = getopt(argc, argv, "?ha:i:v:")) != -1) {
 		switch (ch) {
@@ -193,6 +266,10 @@ int main(int argc, char *argv[])
 			printf("bad algo %d, aborting.\n", ctx->hashAlgo);
 		}
 
+		/* Push the has onto the arrival list */
+		UINT64RingArray_append(ctx->arrivalArray, h);
+		//printf("ra %d, overflow %llu\n", UINT64RingArray_count(ctx->arrivalArray), ctx->arrivalArray->overflowCount);
+
 		/* Push the hash into the list, check for collisions etc */
 		if (arrayAdd(ctx, h) == 1) {
 
@@ -222,6 +299,7 @@ int main(int argc, char *argv[])
 
 	collisionReport(ctx);
 
+	UINT64RingArray_free(ctx->arrivalArray);
 	free(ctx->ifn);
 	free(ctx);
 	return 0;
