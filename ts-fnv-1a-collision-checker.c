@@ -5,6 +5,26 @@
  * Produce a report for collisions and uniqueness
  */
 
+/*
+
+A quick look at the effectiveness of FNV-1a vs CRC32 as a hash produce, same stream.
+They look close enough to make no difference.
+
+Steven-Toth-MacBook-Pro:ts-recovery stoth$ ./ts-fnv-1a-collision-checker -i c1.ts -a 0
+-- 422289 packets
+pid 0x0000 has      459 collisions  0.11%
+pid 0x0020 has      459 collisions  0.11%
+pid 0x0101 has    66103 collisions 15.65%
+pid 0x0102 has        8 collisions  0.00%
+pid 0x1fff has    57530 collisions 13.62%
+Steven-Toth-MacBook-Pro:ts-recovery stoth$ ./ts-fnv-1a-collision-checker -i c1.ts -a 1
+-- 400038 packets
+pid 0x0000 has      434 collisions  0.11%
+pid 0x0020 has      434 collisions  0.11%
+pid 0x0101 has    61900 collisions 15.47%
+pid 0x0102 has        9 collisions  0.00%
+pid 0x1fff has    54595 collisions 13.65%
+*/
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
