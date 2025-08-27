@@ -214,7 +214,9 @@ int main(int argc, char *argv[])
 		} 
 	}
 	fclose(ifh);
-	//arrayPrint(ctx);
+	if (ctx->verbose > 2) {
+			arrayPrint(ctx);
+	}
 
 	printf("Read %llu packets\n", ctx->packetCount);
 
