@@ -246,12 +246,12 @@ int createInputSocket(Stream *stream, const char *addr, int port)
 void sendOutput(Ctx *ctx, Stream *stream, Packet *pkt)
 {
     if (ltntstools_pid(&pkt->data[0]) == 0x32) {
-        static uint64_t lastCounter = 0;
-        static uint64_t currentCounter = 0;
-        if (ltntstools_verifyPacketWith64bCounter(&pkt->data[0], 188, 0x32, lastCounter, &currentCounter) < 0) {
-            printf("Stream OUT: counter error wanted %lld got %lld\n", lastCounter + 1, currentCounter);
+
+        uint64_t currentCounter = 0;
+        if (ltntstools_verifyPacketWith64bCounter(&pkt->data[0], 188, 0x32, stream->lastCounter, &currentCounter) < 0) {
+            printf("Stream OUT: counter error wanted %lld got %lld\n", stream->lastCounter + 1, currentCounter);
         }
-        lastCounter = currentCounter;  
+        stream->lastCounter = currentCounter;  
     }
 
     sendto(stream->skt, &pkt->data[0], 188, 0, (struct sockaddr*)&stream->sa, sizeof(stream->sa));
