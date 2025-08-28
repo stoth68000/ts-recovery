@@ -38,7 +38,8 @@ typedef struct
     unsigned char *data;
 } Packet;
 
-typedef struct {
+typedef struct
+{
     Packet packets[MAX_BUFFER];
     int head, tail;
     int streamNr;
@@ -113,6 +114,7 @@ void packet_push(PacketBuffer *buf, unsigned char *pkt, uint32_t hash, uint64_t 
     buf->packets[buf->tail].timestamp_ms = ts;
     assert(buf->packets[buf->tail].data);
     memcpy(buf->packets[buf->tail].data, pkt, 188);
+
     buf->tail = (buf->tail + 1) % MAX_BUFFER;
 
     if (buf->tail == buf->head) {
@@ -176,23 +178,40 @@ int correlate_sequences(Packet *a, int a_len, Packet *b, int b_len, int *a_start
     return 0;
 }
 
+int createOutputSocket(Stream *stream, const char *addr, int port)
+{
+    int skt = socket(AF_INET, SOCK_DGRAM, 0);
+    if (skt < 0) {
+        perror("socket");
+        exit(1);
+    }
+
+    memset(&stream->sa, 0, sizeof(stream->sa));
+
+    stream->sa.sin_family = AF_INET;
+    stream->sa.sin_port = htons(port);
+    stream->sa.sin_addr.s_addr = inet_addr(addr);
+
+    return skt;
+}
+
 int createInputSocket(Stream *stream, const char *addr, int port)
 {
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) {
+    int skt = socket(AF_INET, SOCK_DGRAM, 0);
+    if (skt < 0) {
         perror("socket");
         exit(1);
     }
 
     int reuse = 1;
-    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    setsockopt(skt, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
     memset(&stream->sa, 0, sizeof(stream->sa));
     stream->sa.sin_family = AF_INET;
     stream->sa.sin_port = htons(port);
     stream->sa.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(sock, (struct sockaddr*)&stream->sa, sizeof(stream->sa)) < 0) {
+    if (bind(skt, (struct sockaddr*)&stream->sa, sizeof(stream->sa)) < 0) {
         perror("bind");
         exit(1);
     }
@@ -203,7 +222,7 @@ int createInputSocket(Stream *stream, const char *addr, int port)
     mreq.imr_multiaddr.s_addr = inet_addr(addr);
     mreq.imr_interface.s_addr = INADDR_ANY;
 
-    if (setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) {
+    if (setsockopt(skt, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) {
         perror("setsockopt mcast");
         exit(1);
     }
@@ -211,16 +230,16 @@ int createInputSocket(Stream *stream, const char *addr, int port)
     /* Do some socket buffer tuning */
     int size = 0;
     socklen_t optlen = sizeof(size);
-    getsockopt(sock, SOL_SOCKET, SO_RCVBUF, &size, &optlen);
+    getsockopt(skt, SOL_SOCKET, SO_RCVBUF, &size, &optlen);
     printf("Receive buffer size: %8d bytes (before)\n", size);
 
     size = 4 * 1024 * 1024;
-    setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size));
+    setsockopt(skt, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size));
 
-    getsockopt(sock, SOL_SOCKET, SO_RCVBUF, &size, &optlen);
+    getsockopt(skt, SOL_SOCKET, SO_RCVBUF, &size, &optlen);
     printf("Receive buffer size: %8d bytes (after)\n", size);
 
-    return sock;
+    return skt;
 }
 
 /* Transmit a packet to UDP network */
@@ -344,30 +363,26 @@ int main()
     ctx->corrupt = 0;
 
     /* Build a couple of inputs streams */
-    ctx->streams[0].nr  = 1;
-    ctx->streams[0].pb  = PacketBuffer_alloc(1);
+    ctx->streams[0].nr       = 1;
+    ctx->streams[0].pb       = PacketBuffer_alloc(1);
     ctx->streams[0].pb_copy  = PacketBuffer_alloc(3);
-    ctx->streams[0].skt = createInputSocket(&ctx->streams[0], "227.1.1.1", 4001); /* 200ms latency */
+    ctx->streams[0].skt      = createInputSocket(&ctx->streams[0], "227.1.1.1", 4001); /* 200ms latency */
 
-    ctx->streams[1].nr  = 2;
-    ctx->streams[1].pb  = PacketBuffer_alloc(2);
+    ctx->streams[1].nr       = 2;
+    ctx->streams[1].pb       = PacketBuffer_alloc(2);
     ctx->streams[1].pb_copy  = PacketBuffer_alloc(4);
-    ctx->streams[1].skt = createInputSocket(&ctx->streams[1], "227.1.1.1", 4002); /* 5500ms latency */
+    ctx->streams[1].skt      = createInputSocket(&ctx->streams[1], "227.1.1.1", 4002); /* 5500ms latency */
 
     /* Create the UDP output stream */
-    ctx->streams[2].nr  = 2;
-    ctx->streams[2].pb  = NULL;
+    ctx->streams[2].nr       = 2;
+    ctx->streams[2].pb       = NULL;
     ctx->streams[2].pb_copy  = NULL;
-    ctx->streams[2].skt = socket(AF_INET, SOCK_DGRAM, 0);
-    memset(&ctx->streams[2].sa, 0, sizeof(ctx->streams[2].sa));
-    ctx->streams[2].sa.sin_family = AF_INET;
-    ctx->streams[2].sa.sin_port = htons(4001);
-    ctx->streams[2].sa.sin_addr.s_addr = inet_addr("227.1.1.100");
+    ctx->streams[2].skt      = createInputSocket(&ctx->streams[2], "227.1.1.100", 4001); /* This will be massively bursty */
 
     ctx->last_flush = current_time_ms();
 
     /* Setup a transport packet buffer */
-    int pktlen = 128 * 188;
+    int pktlen = 7 * 188;
     unsigned char *pkts = malloc(pktlen);
 
     fd_set readfds;
@@ -382,6 +397,7 @@ int main()
         int ret = select(maxfd + 1, &readfds, NULL, NULL, &tv);
 
         if (ret > 0) {
+            /* Collect all packets across all input streams. */
             ssize_t len;
             for (int i = 0; i < 2; i++) {
                 if (FD_ISSET(ctx->streams[i].skt, &readfds)) {
@@ -401,13 +417,17 @@ int main()
         }
     }
 
-    close(ctx->streams[0].skt);
-    PacketBuffer_free(ctx->streams[0].pb);
-    PacketBuffer_free(ctx->streams[0].pb_copy);
-
-    close(ctx->streams[1].skt);
-    PacketBuffer_free(ctx->streams[1].pb);
-    PacketBuffer_free(ctx->streams[1].pb_copy);
+    for (int i = 0; i < 3; i++) {
+        if (ctx->streams[i].skt > -1) {
+            close(ctx->streams[i].skt);
+        }
+        if (ctx->streams[i].pb) {
+            PacketBuffer_free(ctx->streams[i].pb);
+        }
+        if (ctx->streams[i].pb_copy) {
+            PacketBuffer_free(ctx->streams[i].pb_copy);
+        }
+    }
 
     free(pkts);
     free(ctx);
