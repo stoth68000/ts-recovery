@@ -108,7 +108,7 @@ uint64_t current_time_ms()
     return (uint64_t)(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
 }
 
-void packet_push(PacketBuffer *buf, unsigned char *pkt, uint32_t hash, uint64_t ts)
+void PacketBuffer_push(PacketBuffer *buf, unsigned char *pkt, uint32_t hash, uint64_t ts)
 {
     buf->packets[buf->tail].hash = hash;
     buf->packets[buf->tail].timestamp_ms = ts;
@@ -246,7 +246,6 @@ int createInputSocket(Stream *stream, const char *addr, int port)
 void sendOutput(Ctx *ctx, Stream *stream, Packet *pkt)
 {
     if (ltntstools_pid(&pkt->data[0]) == 0x32) {
-
         uint64_t currentCounter = 0;
         if (ltntstools_verifyPacketWith64bCounter(&pkt->data[0], 188, 0x32, stream->lastCounter, &currentCounter) < 0) {
             printf("Stream OUT: counter error wanted %lld got %lld\n", stream->lastCounter + 1, currentCounter);
@@ -278,10 +277,11 @@ void ingestPackets(Ctx *ctx, Stream *stream, const unsigned char *pkts, int pack
             stream->lastCounter = currentCounter;  
         }
 
+        /* Create a (fairly) unique hash for the transport packet */
         uint32_t val;
         ltntstools_getCRC32(p, 188, &val);
 
-        packet_push(stream->pb, p, ntohl(val), now);
+        PacketBuffer_push(stream->pb, p, ntohl(val), now);
     }
 }
 
