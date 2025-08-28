@@ -7,7 +7,7 @@ all:	ts-combiner ts-fnv-1a-collision-checker
 ts-combiner:	ts-combiner.c
 	gcc -g -Wall -std=c11 $(CFLAGS) $(@).c -o $(@) $(LIBS)
 
-ts-fnv-1a-collision-checker:	ts-fnv-1a-collision-checker.c
+ts-fnv-1a-collision-checker:	ts-fnv-1a-collision-checker.c uint64ringarray.c fnv-1a.h
 	gcc -g -Wall -std=c11 $(CFLAGS) $(@).c -o $(@) $(LIBS)
 
 clean:
