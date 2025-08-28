@@ -4,3 +4,5 @@ ts-combiner
 ts-combiner.dSYM
 ts-fnv-1a-collision-checker
 ts-fnv-1a-collision-checker.dSYM
+.DS_Store
+.vscode
