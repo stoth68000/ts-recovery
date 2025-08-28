@@ -24,6 +24,27 @@ pid 0x0020 has      434 collisions  0.11%
 pid 0x0101 has    61900 collisions 15.47%
 pid 0x0102 has        9 collisions  0.00%
 pid 0x1fff has    54595 collisions 13.65%
+
+fnv-1a performing a couple of collisions better for a 30mbps encoded stream
+Steven-Toth-MacBook-Pro:ts-recovery stoth$ ./ts-fnv-1a-collision-checker -i c2-short-200000.ts -a 0
+Read 200000 packets
+-- 200000 packets
+pid 0x0000 has       90 collisions  0.04%
+pid 0x0030 has       90 collisions  0.04%
+pid 0x0033 has        5 collisions  0.00%
+pid 0x0034 has        1 collisions  0.00%
+pid 0x1fff has    31455 collisions 15.73%
+matching seq len 14, matched 5700934, tried 397971000
+Steven-Toth-MacBook-Pro:ts-recovery stoth$ ./ts-fnv-1a-collision-checker -i c2-short-200000.ts -a 1
+Read 200000 packets
+-- 200000 packets
+pid 0x0000 has       90 collisions  0.04%
+pid 0x0030 has       90 collisions  0.04%
+pid 0x0031 has        2 collisions  0.00%
+pid 0x0033 has        5 collisions  0.00%
+pid 0x0034 has        1 collisions  0.00%
+pid 0x1fff has    31455 collisions 15.73%
+matching seq len 14, matched 5700934, tried 397971000
 */
 #include <stdio.h>
 #include <unistd.h>
@@ -57,6 +78,7 @@ struct tool_ctx_s
 	/* Number of overall hash collisions */
 	uint64_t collisions;
 
+	int matchingLength;
 };
 
 int g_running = 1;
@@ -133,11 +155,79 @@ int arrayAdd(struct tool_ctx_s *ctx, uint64_t hash)
 	return ret;
 }
 
+void sequenceMatching(struct tool_ctx_s *ctx)
+{
+	printf("Running sequence match for length %d, may take a while.\n", ctx->matchingLength);
+	uint64_t matching = 0;
+	uint64_t matched = 0;
+
+	uint64_t *ahash = calloc(ctx->matchingLength, sizeof(uint64_t));
+	uint64_t *chash = calloc(ctx->matchingLength, sizeof(uint64_t));
+
+	uint64_t offset = 0; // Important.
+//	for (int i = 0; i < UINT64RingArray_count(ctx->arrivalArray) - ctx->matchingLength; i++) {
+	for (int i = 0; i < 2000; i++) {
+		if (!g_running) {
+			break;
+		}
+		//printf("matching %8d -- ", i);
+		/* Get size hashs from the arrival list */
+		offset = i;
+		for (int j = 0; j < ctx->matchingLength; j++) {
+			UINT64RingArray_enum(ctx->arrivalArray, &ahash[j], &offset);
+		}
+
+#if 0
+		printf("a: ");
+		for (int i = 0; i < ctx->matchingLength; i++) {
+			printf("%16llx ", ahash[i]);
+		}
+		printf("\n");
+#endif
+
+		for (int j = i + 1; j < UINT64RingArray_count(ctx->arrivalArray) - ctx->matchingLength; j++) {
+
+			matching++;
+
+			/* Now see how many times those N hashes match across the rest of the list */
+			uint64_t coffset = j;
+			for (int j = 0; j < ctx->matchingLength; j++) {
+				UINT64RingArray_enum(ctx->arrivalArray, &chash[j], &coffset);
+			}
+
+#if 0
+			printf("b: ");
+			for (int i = 0; i < ctx->matchingLength; i++) {
+				printf("%16llx ", chash[i]);
+			}
+			printf("\n");
+#endif
+
+			if (memcmp(&ahash[0], &chash[0], ctx->matchingLength * sizeof(uint64_t)) == 0) {
+				matched++;
+#if 0
+				printf("matched: ");
+				for (int i = 0; i < ctx->matchingLength; i++) {
+					printf("%16llx ", chash[i]);
+				}
+				printf("\n");
+#endif
+			}
+
+		}
+	}
+	printf("Complete. Matched %llu, tried %llu\n", matched, matching);
+
+	free(chash);
+	free(ahash);
+}
+
 void usage()
 {
 	printf("usage: -i input.ts\n");
 	printf("  -a <algo#> -- 0=Algo FNV-1a, 1=crc32 [def: 0]\n");
 	printf("  -v increase verbosity\n");
+	printf("  -m <number> run a sequence match of N length to see how sequences hashes help [def: disabled. 14 is a good number]\n");
 }
 
 int main(int argc, char *argv[])
@@ -147,9 +237,10 @@ int main(int argc, char *argv[])
 	/* 12 seconds of 240mbps - cache these hashes */
 	ctx->arrivalArray = UINT64RingArray_alloc(160000 * 12);
 	ctx->pid_collisions = calloc(8192, sizeof(uint32_t));
+	ctx->matchingLength = -1;
 
 	int ch;
-	while ((ch = getopt(argc, argv, "?ha:i:v")) != -1) {
+	while ((ch = getopt(argc, argv, "?ha:i:vm:")) != -1) {
 		switch (ch) {
 		case 'b':
 			break;
@@ -161,6 +252,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'v':
 			ctx->verbose++;
+			break;
+		case 'm':
+			ctx->matchingLength = atoi(optarg);
 			break;
 		case 'h':
 		case '?':
@@ -237,65 +331,9 @@ int main(int argc, char *argv[])
 
 	collisionReport(ctx);
 
-	uint64_t matching = 0;
-	uint64_t matched = 0;
-
-#define MATCH_LEN 14
-	uint64_t offset = 0; // Important.
-//	for (int i = 0; i < UINT64RingArray_count(ctx->arrivalArray) - MATCH_LEN; i++) {
-	for (int i = 0; i < 2000; i++) {
-		if (!g_running) {
-			break;
-		}
-		//printf("matching %8d -- ", i);
-		/* Get size hashs from the arrival list */
-		offset = i;
-		uint64_t ahash[MATCH_LEN];
-		for (int j = 0; j < MATCH_LEN; j++) {
-			UINT64RingArray_enum(ctx->arrivalArray, &ahash[j], &offset);
-		}
-
-#if 0
-		printf("a: ");
-		for (int i = 0; i < MATCH_LEN; i++) {
-			printf("%16llx ", ahash[i]);
-		}
-		printf("\n");
-#endif
-
-		for (int j = i + 1; j < UINT64RingArray_count(ctx->arrivalArray) - MATCH_LEN; j++) {
-
-			matching++;
-
-			/* Now see how many times those N hashes match across the rest of the list */
-			uint64_t chash[MATCH_LEN];
-			uint64_t coffset = j;
-			for (int j = 0; j < MATCH_LEN; j++) {
-				UINT64RingArray_enum(ctx->arrivalArray, &chash[j], &coffset);
-			}
-
-#if 0
-			printf("b: ");
-			for (int i = 0; i < MATCH_LEN; i++) {
-				printf("%16llx ", chash[i]);
-			}
-			printf("\n");
-#endif
-
-			if (memcmp(&ahash[0], &chash[0], MATCH_LEN * sizeof(uint64_t)) == 0) {
-				matched++;
-#if 0
-				printf("matched: ");
-				for (int i = 0; i < MATCH_LEN; i++) {
-					printf("%16llx ", chash[i]);
-				}
-				printf("\n");
-#endif
-			}
-
-		}
+	if (ctx->matchingLength > 1) {
+		sequenceMatching(ctx);
 	}
-	printf("matching seq len %d, matched %llu, tried %llu\n", MATCH_LEN, matched, matching);
 
 	free(ctx->pid_collisions);
 	UINT64RingArray_free(ctx->arrivalArray);
