@@ -236,6 +236,8 @@ int main(int argc, char *argv[])
 
 	/* 12 seconds of 240mbps - cache these hashes */
 	ctx->arrivalArray = UINT64RingArray_alloc(160000 * 12);
+
+	/* Count each time a hash collision occurs on a specific pid */
 	ctx->pid_collisions = calloc(8192, sizeof(uint32_t));
 	ctx->matchingLength = -1;
 
@@ -285,7 +287,7 @@ int main(int argc, char *argv[])
 			//break;
 		}
 
-		/* push to algo */
+		/* push to algo, get a hash in return */
 		uint64_t h = 0;
 		if (ctx->hashAlgo == 0) {
 			h = ltntstools_packet_fingerprint64(pkt);
@@ -299,10 +301,10 @@ int main(int argc, char *argv[])
 			exit(1);
 		}
 
-		/* Push the has onto the arrival list */
+		/* Push the has onto the arrival list. A list of hashs in the order the packets were received. */
 		UINT64RingArray_append(ctx->arrivalArray, h);
 
-		/* Push the hash into the sorted list, check for collisions etc */
+		/* Push the hash into a sorted ascending list. Register any collisions. */
 		if (arrayAdd(ctx, h) == 1) {
 
 			uint16_t pid = ltntstools_pid(pkt);
@@ -318,6 +320,7 @@ int main(int argc, char *argv[])
 		}
 
 		if (time(NULL) >= lastReport + 5) {
+			/* For long running tests, print the pid collision report periodically. */
 			lastReport = time(NULL);
 			collisionReport(ctx);
 		} 
