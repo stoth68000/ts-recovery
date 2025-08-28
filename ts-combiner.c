@@ -25,7 +25,7 @@
 #include <arpa/inet.h>
 #include <libltntstools/ltntstools.h>
 
-#define MAX_BUFFER (65536 * 2)
+#define MAX_BUFFER (65536 * 2) /* TODO: This should be a function of bitrate */
 #define MAX_SEQUENCE 120
 #define CORRELATE_THRESHOLD 64
 #define MAX_DELAY_MS 2500
@@ -33,7 +33,7 @@
 
 typedef struct
 {
-    uint32_t crc32;
+    uint64_t hash;
     uint64_t timestamp_ms;
     unsigned char *data;
 } Packet;
@@ -46,7 +46,10 @@ typedef struct {
 
 typedef struct
 {
-    int nr;
+    /* 1 is generally the most trusted leg, likely to have let drops, typically shortest latency with FEC/ARQ. */
+    /* 2 is a less reliable leg, likely to have loss but not necessarily, typical long latency with no/minimal/unreliable correction. */
+    /* 3 is corrected UDP output stream. */
+    int nr; 
     int skt;
 
     uint64_t lastCounter;
@@ -57,7 +60,7 @@ typedef struct
     struct sockaddr_in sa;
 } Stream;
 
-PacketBuffer *allocPacketBuffer(int streamNr)
+PacketBuffer *PacketBuffer_alloc(int streamNr)
 {
     PacketBuffer *pb = calloc(1, sizeof(*pb));
     if (!pb) {
@@ -72,7 +75,7 @@ PacketBuffer *allocPacketBuffer(int streamNr)
     return pb;
 }
 
-void freePacketBuffer(PacketBuffer *pb)
+void PacketBuffer_free(PacketBuffer *pb)
 {
     if (!pb) {
         return;
@@ -104,9 +107,9 @@ uint64_t current_time_ms()
     return (uint64_t)(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
 }
 
-void packet_push(PacketBuffer *buf, unsigned char *pkt, uint32_t crc32, uint64_t ts)
+void packet_push(PacketBuffer *buf, unsigned char *pkt, uint32_t hash, uint64_t ts)
 {
-    buf->packets[buf->tail].crc32 = crc32;
+    buf->packets[buf->tail].hash = hash;
     buf->packets[buf->tail].timestamp_ms = ts;
     assert(buf->packets[buf->tail].data);
     memcpy(buf->packets[buf->tail].data, pkt, 188);
@@ -119,13 +122,13 @@ void packet_push(PacketBuffer *buf, unsigned char *pkt, uint32_t crc32, uint64_t
     }
 }
 
-int buffer_size(PacketBuffer *buf)
+int PacketBuffer_size(PacketBuffer *buf)
 {
     return (buf->tail + MAX_BUFFER - buf->head) % MAX_BUFFER;
 }
 
 /* Remove N items from the list */
-void buffer_advance(PacketBuffer *buf, int count)
+void PacketBuffer_advance(PacketBuffer *buf, int count)
 {
     buf->head = (buf->head + count) % MAX_BUFFER;
 }
@@ -133,7 +136,7 @@ void buffer_advance(PacketBuffer *buf, int count)
 /* Shallow copy the entire src packet content to a temporary list of packets.
  * Pointers are copied as-is, not reallocated.
  */
-void buffer_copy(Packet *dst, PacketBuffer *src, int *out_len)
+void PacketBuffer_copy(Packet *dst, PacketBuffer *src, int *out_len)
 {
     int i = src->head;
     int count = 0;
@@ -157,7 +160,7 @@ int correlate_sequences(Packet *a, int a_len, Packet *b, int b_len, int *a_start
         for (int j = 0; j <= b_len - CORRELATE_THRESHOLD; ++j) {
             int match = 1;
             for (int k = 0; k < CORRELATE_THRESHOLD; ++k) {
-                if (a[i + k].crc32 != b[j + k].crc32) {
+                if (a[i + k].hash != b[j + k].hash) {
                     match = 0;
                     break;
                 }
@@ -269,8 +272,8 @@ void ingestPackets(Ctx *ctx, Stream *stream, const unsigned char *pkts, int pack
 void periodicProcess(Ctx *ctx)
 {
     int alen = 0, blen = 0;
-    buffer_copy(ctx->streams[0].pb_copy->packets, ctx->streams[0].pb, &alen);
-    buffer_copy(ctx->streams[1].pb_copy->packets, ctx->streams[1].pb, &blen);
+    PacketBuffer_copy(ctx->streams[0].pb_copy->packets, ctx->streams[0].pb, &alen);
+    PacketBuffer_copy(ctx->streams[1].pb_copy->packets, ctx->streams[1].pb, &blen);
 
     int ai = 0, bi = 0;
     if (ctx->verbose) {
@@ -286,8 +289,8 @@ void periodicProcess(Ctx *ctx)
 
         int i = 0;
         while (i < common) {
-            uint32_t va = ctx->streams[0].pb_copy->packets[ai + i].crc32;
-            uint32_t vb = ctx->streams[1].pb_copy->packets[bi + i].crc32;
+            uint32_t va = ctx->streams[0].pb_copy->packets[ai + i].hash;
+            uint32_t vb = ctx->streams[1].pb_copy->packets[bi + i].hash;
 
             if (va == vb) {
                 /* Send stream 1 to output */
@@ -300,7 +303,7 @@ void periodicProcess(Ctx *ctx)
 
             for (int la = 1; la <= MAX_LOOKAHEAD && (i + la) < common; ++la) {
                 // stream1 loss recovery
-                if (ctx->streams[0].pb_copy->packets[ai + i + la].crc32 == ctx->streams[1].pb_copy->packets[bi + i].crc32) {
+                if (ctx->streams[0].pb_copy->packets[ai + i + la].hash == ctx->streams[1].pb_copy->packets[bi + i].hash) {
                     printf("[RECOVER] stream1 lost %d packets at i=%d\n", la, i);
                     for (int k = 0; k < la; k++) {
                         sendOutput(ctx, &ctx->streams[2], &ctx->streams[1].pb_copy->packets[bi + i + k]);
@@ -311,7 +314,7 @@ void periodicProcess(Ctx *ctx)
                 }
 
                 // stream2 loss recovery
-                if (ctx->streams[1].pb_copy->packets[bi + i + la].crc32 == ctx->streams[0].pb_copy->packets[ai + i].crc32) {
+                if (ctx->streams[1].pb_copy->packets[bi + i + la].hash == ctx->streams[0].pb_copy->packets[ai + i].hash) {
                     printf("[RECOVER] stream2 lost %d packets at i=%d\n", la, i);
                     for (int k = 0; k < la; k++) {
                         sendOutput(ctx, &ctx->streams[2], &ctx->streams[0].pb_copy->packets[ai + i + k]);
@@ -329,8 +332,8 @@ void periodicProcess(Ctx *ctx)
             }
         }
 
-        buffer_advance(ctx->streams[0].pb, ai + common);
-        buffer_advance(ctx->streams[1].pb, bi + common);
+        PacketBuffer_advance(ctx->streams[0].pb, ai + common);
+        PacketBuffer_advance(ctx->streams[1].pb, bi + common);
     }
 }
 
@@ -342,13 +345,13 @@ int main()
 
     /* Build a couple of inputs streams */
     ctx->streams[0].nr  = 1;
-    ctx->streams[0].pb  = allocPacketBuffer(1);
-    ctx->streams[0].pb_copy  = allocPacketBuffer(3);
+    ctx->streams[0].pb  = PacketBuffer_alloc(1);
+    ctx->streams[0].pb_copy  = PacketBuffer_alloc(3);
     ctx->streams[0].skt = createInputSocket(&ctx->streams[0], "227.1.1.1", 4001); /* 200ms latency */
 
     ctx->streams[1].nr  = 2;
-    ctx->streams[1].pb  = allocPacketBuffer(2);
-    ctx->streams[1].pb_copy  = allocPacketBuffer(4);
+    ctx->streams[1].pb  = PacketBuffer_alloc(2);
+    ctx->streams[1].pb_copy  = PacketBuffer_alloc(4);
     ctx->streams[1].skt = createInputSocket(&ctx->streams[1], "227.1.1.1", 4002); /* 5500ms latency */
 
     /* Create the UDP output stream */
@@ -399,12 +402,12 @@ int main()
     }
 
     close(ctx->streams[0].skt);
-    freePacketBuffer(ctx->streams[0].pb);
-    freePacketBuffer(ctx->streams[0].pb_copy);
+    PacketBuffer_free(ctx->streams[0].pb);
+    PacketBuffer_free(ctx->streams[0].pb_copy);
 
     close(ctx->streams[1].skt);
-    freePacketBuffer(ctx->streams[1].pb);
-    freePacketBuffer(ctx->streams[1].pb_copy);
+    PacketBuffer_free(ctx->streams[1].pb);
+    PacketBuffer_free(ctx->streams[1].pb_copy);
 
     free(pkts);
     free(ctx);
